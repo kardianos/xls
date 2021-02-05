@@ -10,20 +10,34 @@ import (
 	"github.com/kardianos/xls/yymmdd"
 )
 
+type CellValue struct {
+	Text   string
+	Float  float64
+	Int    int64
+	Format string
+}
+
 //content type
 type contentHandler interface {
 	String(*WorkBook) []string
+	Value(*WorkBook) CellValue
 	FirstCol() uint16
 	LastCol() uint16
 }
+type columner interface {
+	Row() uint16
+}
+
+type contentColumner interface {
+	contentHandler
+	columner
+}
+
+var _ contentHandler = &Col{}
 
 type Col struct {
 	RowB      uint16
 	FirstColB uint16
-}
-
-type Coler interface {
-	Row() uint16
 }
 
 func (c *Col) Row() uint16 {
@@ -40,6 +54,9 @@ func (c *Col) LastCol() uint16 {
 
 func (c *Col) String(wb *WorkBook) []string {
 	return []string{"default"}
+}
+func (c *Col) Value(wb *WorkBook) CellValue {
+	return CellValue{}
 }
 
 type XfRk struct {
@@ -127,6 +144,15 @@ func (rk RK) Float() (float64, error) {
 	}
 	return f, nil
 }
+func (rk RK) Value(wb *WorkBook) CellValue {
+	i, f, _ := rk.number()
+	return CellValue{
+		Int:   int64(i),
+		Float: f,
+	}
+}
+
+var _ contentHandler = &MulrkCol{}
 
 type MulrkCol struct {
 	Col
@@ -146,6 +172,14 @@ func (c *MulrkCol) String(wb *WorkBook) []string {
 	}
 	return res
 }
+func (c *MulrkCol) Value(wb *WorkBook) CellValue {
+	if len(c.Xfrks) == 0 {
+		return CellValue{}
+	}
+	return c.Xfrks[0].Rk.Value(wb)
+}
+
+var _ contentHandler = &MulBlankCol{}
 
 type MulBlankCol struct {
 	Col
@@ -161,6 +195,8 @@ func (c *MulBlankCol) String(wb *WorkBook) []string {
 	return make([]string, len(c.Xfs))
 }
 
+var _ contentHandler = &NumberCol{}
+
 type NumberCol struct {
 	Col
 	Index uint16
@@ -168,12 +204,35 @@ type NumberCol struct {
 }
 
 func (c *NumberCol) String(wb *WorkBook) []string {
-	if fNo := wb.XF[c.Index].formatNo(); fNo != 0 {
-		t := timeFromExcelTime(c.Float, wb.dateMode == 1)
-		return []string{yymmdd.Format(t, wb.Formats[fNo].str)}
+	fNo := wb.XF[c.Index].formatNo()
+	fo, ok := wb.Formats[fNo]
+	if !ok {
+		return []string{strconv.FormatFloat(c.Float, 'f', -1, 64)}
 	}
-	return []string{strconv.FormatFloat(c.Float, 'f', -1, 64)}
+	fs := fo.str
+
+	switch {
+	default:
+		return []string{strconv.FormatFloat(c.Float, 'f', -1, 64)}
+	case strings.ContainsAny(fs, "YyMmDdHhSs"):
+		t := wb.ToDateTime(c.Float)
+		return []string{yymmdd.Format(t, fs)}
+	case strings.ContainsAny(fs, "0.#"):
+		// TODO: actually format number.
+		return []string{strconv.FormatFloat(c.Float, 'f', -1, 64)}
+	}
 }
+
+func (c *NumberCol) Value(wb *WorkBook) CellValue {
+	fNo := wb.XF[c.Index].formatNo()
+	fo, _ := wb.Formats[fNo]
+	return CellValue{
+		Format: fo.str,
+		Float:  c.Float,
+	}
+}
+
+var _ contentHandler = &FormulaStringCol{}
 
 type FormulaStringCol struct {
 	Col
@@ -182,6 +241,11 @@ type FormulaStringCol struct {
 
 func (c *FormulaStringCol) String(wb *WorkBook) []string {
 	return []string{c.RenderedValue}
+}
+func (c *FormulaStringCol) Value(wb *WorkBook) CellValue {
+	return CellValue{
+		Text: c.RenderedValue,
+	}
 }
 
 //str, err = wb.get_string(buf_item, size)
@@ -202,6 +266,8 @@ func (c *FormulaCol) String(wb *WorkBook) []string {
 	return []string{"FormulaCol"}
 }
 
+var _ contentHandler = &RkCol{}
+
 type RkCol struct {
 	Col
 	Xfrk XfRk
@@ -210,6 +276,11 @@ type RkCol struct {
 func (c *RkCol) String(wb *WorkBook) []string {
 	return []string{c.Xfrk.String(wb)}
 }
+func (c *RkCol) Value(wb *WorkBook) CellValue {
+	return c.Xfrk.Rk.Value(wb)
+}
+
+var _ contentHandler = &LabelsstCol{}
 
 type LabelsstCol struct {
 	Col
@@ -221,6 +292,8 @@ func (c *LabelsstCol) String(wb *WorkBook) []string {
 	return []string{wb.sst[int(c.Sst)]}
 }
 
+var _ contentHandler = &labelCol{}
+
 type labelCol struct {
 	BlankCol
 	Str string
@@ -229,6 +302,13 @@ type labelCol struct {
 func (c *labelCol) String(wb *WorkBook) []string {
 	return []string{c.Str}
 }
+func (c *labelCol) Value(wb *WorkBook) CellValue {
+	return CellValue{
+		Text: c.Str,
+	}
+}
+
+var _ contentHandler = &BlankCol{}
 
 type BlankCol struct {
 	Col
@@ -237,4 +317,8 @@ type BlankCol struct {
 
 func (c *BlankCol) String(wb *WorkBook) []string {
 	return []string{""}
+}
+
+func (c *BlankCol) Value(wb *WorkBook) CellValue {
+	return CellValue{}
 }

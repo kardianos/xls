@@ -34,9 +34,14 @@ func OpenReader(r io.ReadSeeker, charset string) (*WorkBook, error) {
 	if book == nil {
 		return nil, fmt.Errorf("No OLE2 Excel Workbook found")
 	}
+	c, isc := r.(io.Closer)
 	of := ole.OpenFile(book, root)
-	wb := newWorkBookFromOle2(of)
-	if c, ok := r.(io.Closer); ok {
+	wb, err := newWorkBookFromOle2(of)
+	if err != nil {
+		c.Close()
+		return nil, err
+	}
+	if isc {
 		wb.closer = c
 	}
 	return wb, nil

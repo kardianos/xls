@@ -34,6 +34,8 @@ func (c *CellRange) LastCol() uint16 {
 	return c.LastColB
 }
 
+var _ contentHandler = &HyperLink{}
+
 // HyperLink of a link.
 type HyperLink struct {
 	CellRange
@@ -60,4 +62,10 @@ func (h *HyperLink) String(wb *WorkBook) []string {
 		res[i] = str
 	}
 	return res
+}
+
+func (h *HyperLink) Value(wb *WorkBook) CellValue {
+	return CellValue{
+		Text: h.URL,
+	}
 }

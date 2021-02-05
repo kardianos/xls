@@ -14,9 +14,9 @@ func TestBigTable(t *testing.T) {
 	}
 	defer xlFile.Close()
 
-	sheet := xlFile.GetSheet(0)
-	if sheet == nil {
-		t.Fatal("Cant get sheet")
+	sheet, err := xlFile.GetSheet(0)
+	if err != nil {
+		t.Fatalf("Cant get sheet: %v", err)
 	}
 
 	cnt1 := 1

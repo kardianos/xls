@@ -45,26 +45,29 @@ func (w *WorkSheet) Row(i int) *Row {
 	return row
 }
 
-func (w *WorkSheet) parse(buf io.ReadSeeker) {
+func (w *WorkSheet) parse(buf io.ReadSeeker) error {
 	w.rows = make(map[uint16]*Row)
 	b := new(bof)
-	var bof_pre *bof
-	var col_pre interface{}
+	var colPre interface{}
+	var err error
 	for {
-		if err := binary.Read(buf, binary.LittleEndian, b); err == nil {
-			bof_pre, col_pre = w.parseBof(buf, b, bof_pre, col_pre)
-			if b.ID == 0xa {
-				break
-			}
-		} else {
-			fmt.Println(err)
+		err = binary.Read(buf, binary.LittleEndian, b)
+		if err != nil {
+			return err
+		}
+		colPre, err = w.parseBof(buf, b, colPre)
+		if err != nil {
+			return err
+		}
+		if b.ID == 0xa {
 			break
 		}
 	}
 	w.parsed = true
+	return nil
 }
 
-func (w *WorkSheet) parseBof(buf io.ReadSeeker, b *bof, pre *bof, col_pre interface{}) (*bof, interface{}) {
+func (w *WorkSheet) parseBof(buf io.ReadSeeker, b *bof, colPre interface{}) (interface{}, error) {
 	var col interface{}
 	var bts = make([]byte, b.Size)
 	binary.Read(buf, binary.LittleEndian, bts)
@@ -114,17 +117,19 @@ func (w *WorkSheet) parseBof(buf io.ReadSeeker, b *bof, pre *bof, col_pre interf
 		binary.Read(buf, binary.LittleEndian, &c.Bts)
 		col = c
 	case 0x207: //STRING = FORMULA-VALUE is expected right after FORMULA
-		if ch, ok := col_pre.(*FormulaCol); ok {
-			c := new(FormulaStringCol)
-			c.Col = ch.Header.Col
-			var cStringLen uint16
-			binary.Read(buf, binary.LittleEndian, &cStringLen)
-			str, err := w.wb.getString(buf, cStringLen)
-			if nil == err {
-				c.RenderedValue = str
-			}
-			col = c
+		ch, ok := colPre.(*FormulaCol)
+		if !ok {
+			return nil, fmt.Errorf("Expected formula token, got %T", colPre)
 		}
+		c := new(FormulaStringCol)
+		c.Col = ch.Header.Col
+		var cStringLen uint16
+		binary.Read(buf, binary.LittleEndian, &cStringLen)
+		str, err := w.wb.getString(buf, cStringLen)
+		if nil == err {
+			c.RenderedValue = str
+		}
+		col = c
 	case 0x27e: //RK
 		col = new(RkCol)
 		binary.Read(buf, binary.LittleEndian, col)
@@ -195,31 +200,21 @@ func (w *WorkSheet) parseBof(buf io.ReadSeeker, b *bof, pre *bof, col_pre interf
 		buf.Seek(int64(b.Size), 1)
 	case 0xa:
 	default:
-		// log.Printf("Unknow %X,%d\n", b.Id, b.Size)
 		buf.Seek(int64(b.Size), 1)
 	}
-	if col != nil {
-		w.add(col)
+	if x, ok := col.(contentColumner); ok {
+		w.addContent(x.Row(), x)
 	}
-	return b, col
-}
-
-func (w *WorkSheet) add(content interface{}) {
-	if ch, ok := content.(contentHandler); ok {
-		if col, ok := content.(Coler); ok {
-			w.addContent(col.Row(), ch)
-		}
-	}
-
+	return col, nil
 }
 
 func (w *WorkSheet) addContent(rowNum uint16, ch contentHandler) {
 	var row *Row
 	var ok bool
 	if row, ok = w.rows[rowNum]; !ok {
-		info := new(rowInfo)
-		info.Index = rowNum
-		row = w.addRow(info)
+		row = w.addRow(&rowInfo{
+			Index: rowNum,
+		})
 	}
 	if row.info.Lcell < ch.LastCol() {
 		row.info.Lcell = ch.LastCol()

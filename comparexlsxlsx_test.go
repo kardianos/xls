@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-// compareXLX compares file types.
+// compareXLX to a CSV file.
 func compareXLX(xlsName string, csvName string) error {
 	xlsFile, err := Open(xlsName, "utf-8")
 	if err != nil {
@@ -28,9 +28,9 @@ func compareXLX(xlsName string, csvName string) error {
 		return err
 	}
 
-	xlsSheet := xlsFile.GetSheet(0)
-	if xlsSheet == nil {
-		return fmt.Errorf("Cant get xls sheet")
+	xlsSheet, err := xlsFile.GetSheet(0)
+	if err != nil {
+		return fmt.Errorf("Cant get xls sheet: %w", err)
 	}
 	for rowi, row := range all {
 		xlsRow := xlsSheet.Row(rowi)
@@ -40,6 +40,8 @@ func compareXLX(xlsName string, csvName string) error {
 		for coli, cell := range row {
 			csvText := strings.TrimSpace(cell)
 			xlsText := strings.TrimSpace(xlsRow.ColExact(coli))
+			v := xlsRow.Value(coli)
+			tm := xlsFile.ToDateTime(v.Float)
 			if xlsText == csvText {
 				continue
 			}
@@ -51,13 +53,13 @@ func compareXLX(xlsName string, csvName string) error {
 				if diff <= 0.0000001 {
 					continue
 				}
-				return fmt.Errorf("sheet:%d, row/col: %d/%d, csv: (%s)[%d], xls: (%s)[%d], numbers difference: %f",
+				return fmt.Errorf("sheet:%d, row/col: %d/%d, csv: (%s)[%d], xls: (%s)[%d], numbers difference: %f, v=%v, t=%s",
 					0, rowi, coli, csvText, len(csvText),
-					xlsText, len(xlsText), diff)
+					xlsText, len(xlsText), diff, v, tm)
 			}
-			return fmt.Errorf("sheet:%d, row/col: %d/%d, csv: (%s)[%d], xls: (%s)[%d]",
+			return fmt.Errorf("sheet:%d, row/col: %d/%d, csv: (%s)[%d], xls: (%s)[%d], V=%v, t=%s",
 				0, rowi, coli, csvText, len(csvText),
-				xlsText, len(xlsText))
+				xlsText, len(xlsText), v, tm)
 		}
 	}
 

@@ -3,8 +3,9 @@ package xls
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"io"
-	"os"
+	"time"
 	"unicode/utf16"
 
 	"golang.org/x/text/encoding/charmap"
@@ -30,58 +31,62 @@ type WorkBook struct {
 	closer         io.Closer
 }
 
+func (wb *WorkBook) ToDateTime(f float64) time.Time {
+	return timeFromExcelTime(f, wb.dateMode == 1)
+}
+
 type sstInfo struct {
 	Total uint32
 	Count uint32
 }
 
 //read workbook from ole2 file
-func newWorkBookFromOle2(rs io.ReadSeeker) *WorkBook {
-	wb := new(WorkBook)
-	wb.Formats = make(map[uint16]*Format)
-	wb.rs = rs
-	wb.sheets = make([]*WorkSheet, 0)
-	wb.parse(rs)
-	return wb
+func newWorkBookFromOle2(rs io.ReadSeeker) (*WorkBook, error) {
+	wb := &WorkBook{
+		Formats: make(map[uint16]*Format),
+		rs:      rs,
+		sheets:  make([]*WorkSheet, 0),
+	}
+	err := wb.parse()
+	return wb, err
 }
 
-func (w *WorkBook) parse(buf io.ReadSeeker) {
+func (w *WorkBook) parse() error {
 	b := new(bof)
 	bofPre := new(bof)
 
 	offset := 0
 	for {
-		if err := binary.Read(buf, binary.LittleEndian, b); err == nil {
-			bofPre, b, offset = w.parseBof(buf, b, bofPre, offset)
-		} else {
-			break
+		err := binary.Read(w.rs, binary.LittleEndian, b)
+		if err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			if err == io.ErrUnexpectedEOF { // TODO: Something is probably wrong that we get this.
+				return nil
+			}
+			return err
+		}
+		bofPre, b, offset, err = w.parseBof(b, bofPre, offset)
+		if err == io.EOF {
+			err = nil
+		}
+		if err != nil {
+			return err
 		}
 	}
 }
 
-func (w *WorkBook) addXf(xf XF) {
-	w.XF = append(w.XF, xf)
-}
-
-func (w *WorkBook) addFont(font *FontInfo, buf io.ReadSeeker) {
-	name, _ := w.getString(buf, uint16(font.NameB))
-	w.Fonts = append(w.Fonts, Font{Info: font, Name: name})
-}
-
-func (w *WorkBook) addFormat(format *Format) {
-	if w.Formats == nil {
-		os.Exit(1)
-	}
-	w.Formats[format.Head.Index] = format
-}
-
-func (w *WorkBook) parseBof(buf io.ReadSeeker, b *bof, pre *bof, offsetPre int) (after *bof, afterUsing *bof, offset int) {
+func (w *WorkBook) parseBof(b, pre *bof, offsetPre int) (after *bof, afterUsing *bof, offset int, err error) {
 	after = b
 	afterUsing = pre
 	var bts = make([]byte, b.Size)
+	buf := w.rs
 	binary.Read(buf, binary.LittleEndian, bts)
 	bufItem := bytes.NewReader(bts)
 	switch b.ID {
+	default:
+		return
 	case 0x809:
 		bif := new(biffHeader)
 		binary.Read(bufItem, binary.LittleEndian, bif)
@@ -94,7 +99,6 @@ func (w *WorkBook) parseBof(buf io.ReadSeeker, b *bof, pre *bof, offsetPre int) 
 	case 0x3c: // CONTINUE
 		if pre.ID == 0xfc {
 			var size uint16
-			var err error
 			if w.continue_utf16 >= 1 {
 				size = w.continue_utf16
 				w.continue_utf16 = 0
@@ -107,6 +111,7 @@ func (w *WorkBook) parseBof(buf io.ReadSeeker, b *bof, pre *bof, offsetPre int) 
 				w.sst[offsetPre] = w.sst[offsetPre] + str
 
 				if err == io.EOF {
+					err = nil
 					break
 				}
 
@@ -123,10 +128,9 @@ func (w *WorkBook) parseBof(buf io.ReadSeeker, b *bof, pre *bof, offsetPre int) 
 		w.sst = make([]string, info.Count)
 		var size uint16
 		var i = 0
-		// dont forget to initialize offset
+		// Initialize offset.
 		offset = 0
 		for ; i < int(info.Count); i++ {
-			var err error
 			err = binary.Read(bufItem, binary.LittleEndian, &size)
 			if err == nil {
 				var str string
@@ -135,6 +139,7 @@ func (w *WorkBook) parseBof(buf io.ReadSeeker, b *bof, pre *bof, offsetPre int) 
 			}
 
 			if err == io.EOF {
+				err = nil
 				break
 			}
 		}
@@ -143,27 +148,55 @@ func (w *WorkBook) parseBof(buf io.ReadSeeker, b *bof, pre *bof, offsetPre int) 
 		var bs = new(boundsheet)
 		binary.Read(bufItem, binary.LittleEndian, bs)
 		// different for BIFF5 and BIFF8
-		w.addSheet(bs, bufItem)
+
+		name, _ := w.getString(bufItem, uint16(bs.Name))
+		w.sheets = append(w.sheets, &WorkSheet{
+			bs:         bs,
+			Name:       name,
+			wb:         w,
+			Visibility: TWorkSheetVisibility(bs.Visible),
+		})
 	case 0x0e0: // XF
 		if w.Is5ver {
 			xf := new(xf5)
 			binary.Read(bufItem, binary.LittleEndian, xf)
-			w.addXf(xf)
+			w.XF = append(w.XF, xf)
 		} else {
 			xf := new(xf8)
 			binary.Read(bufItem, binary.LittleEndian, xf)
-			w.addXf(xf)
+			w.XF = append(w.XF, xf)
 		}
-	case 0x031: // FONT
+	case 0x031: // Font
 		f := new(FontInfo)
 		binary.Read(bufItem, binary.LittleEndian, f)
-		w.addFont(f, bufItem)
-	case 0x41E: //FORMAT
-		font := new(Format)
-		binary.Read(bufItem, binary.LittleEndian, &font.Head)
-		font.str, _ = w.getString(bufItem, font.Head.Size)
-		w.addFormat(font)
-	case 0x22: //DATEMODE
+		var name string
+		name, err = w.getString(bufItem, uint16(f.NameB))
+		if err == io.EOF {
+			err = nil
+		}
+		if err != nil {
+			err = fmt.Errorf("font getString: %w", err)
+			return
+		}
+		w.Fonts = append(w.Fonts, Font{Info: f, Name: name})
+	case 0x41E: // Format
+		f := new(Format)
+		binary.Read(bufItem, binary.LittleEndian, &f.Head)
+		f.str, err = w.getString(bufItem, f.Head.Size)
+		if err == io.EOF {
+			err = nil
+		}
+		if err != nil {
+			err = fmt.Errorf("format getString: %w", err)
+			return
+		}
+		index := f.Head.Index
+		_, found := w.Formats[index]
+		if found {
+			err = fmt.Errorf("format index %d already found", index)
+		}
+		w.Formats[index] = f
+	case 0x22: // DateMode
 		binary.Read(bufItem, binary.LittleEndian, &w.dateMode)
 	}
 	return
@@ -259,27 +292,28 @@ func (w *WorkBook) getString(buf io.ReadSeeker, size uint16) (res string, err er
 	return
 }
 
-func (w *WorkBook) addSheet(sheet *boundsheet, buf io.ReadSeeker) {
-	name, _ := w.getString(buf, uint16(sheet.Name))
-	w.sheets = append(w.sheets, &WorkSheet{bs: sheet, Name: name, wb: w, Visibility: TWorkSheetVisibility(sheet.Visible)})
-}
-
 // Reading a sheet from the compress file to memory, you should call this before you try to get anything from sheet.
-func (w *WorkBook) prepareSheet(sheet *WorkSheet) {
-	w.rs.Seek(int64(sheet.bs.Filepos), 0)
-	sheet.parse(w.rs)
+func (w *WorkBook) prepareSheet(sheet *WorkSheet) error {
+	_, err := w.rs.Seek(int64(sheet.bs.Filepos), 0)
+	if err != nil {
+		return err
+	}
+	return sheet.parse(w.rs)
 }
 
 // GetSheet gets one sheet by its number.
-func (w *WorkBook) GetSheet(num int) *WorkSheet {
-	if num >= len(w.sheets) {
-		return nil
+func (w *WorkBook) GetSheet(num int) (*WorkSheet, error) {
+	if total := len(w.sheets); num >= len(w.sheets) || num < 0 {
+		return nil, fmt.Errorf("sheet index %d not found (%d total sheets)", num, total)
 	}
 	s := w.sheets[num]
 	if !s.parsed {
-		w.prepareSheet(s)
+		err := w.prepareSheet(s)
+		if err != nil {
+			return nil, err
+		}
 	}
-	return s
+	return s, nil
 }
 
 // NumSheets gets the number of all sheets, look into example.

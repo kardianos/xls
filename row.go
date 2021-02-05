@@ -45,6 +45,15 @@ func (r *Row) ColExact(n int) string {
 	return ""
 }
 
+// Value of the cell.
+func (r *Row) Value(n int) CellValue {
+	serial := uint16(n)
+	if ch, ok := r.cols[serial]; ok {
+		return ch.Value(r.wb)
+	}
+	return CellValue{}
+}
+
 // LastCol gets the index of the last column.
 func (r *Row) LastCol() int {
 	return int(r.info.Lcell)
