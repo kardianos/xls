@@ -33,8 +33,6 @@ type contentColumner interface {
 	columner
 }
 
-var _ contentHandler = &Col{}
-
 type Col struct {
 	RowB      uint16
 	FirstColB uint16
@@ -54,9 +52,6 @@ func (c *Col) LastCol() uint16 {
 
 func (c *Col) String(wb *WorkBook) []string {
 	return []string{"default"}
-}
-func (c *Col) Value(wb *WorkBook) CellValue {
-	return CellValue{}
 }
 
 type XfRk struct {
@@ -103,6 +98,11 @@ func (xf *XfRk) String(wb *WorkBook) string {
 		return t.Format(time.RFC3339)
 	}
 	return xf.Rk.String()
+}
+func (xf *XfRk) Value(wb *WorkBook) CellValue {
+	return CellValue{
+		Text: xf.String(wb),
+	}
 }
 
 type RK uint32
@@ -194,6 +194,9 @@ func (c *MulBlankCol) LastCol() uint16 {
 func (c *MulBlankCol) String(wb *WorkBook) []string {
 	return make([]string, len(c.Xfs))
 }
+func (c *MulBlankCol) Value(wb *WorkBook) CellValue {
+	return CellValue{}
+}
 
 var _ contentHandler = &NumberCol{}
 
@@ -265,6 +268,9 @@ type FormulaCol struct {
 func (c *FormulaCol) String(wb *WorkBook) []string {
 	return []string{"FormulaCol"}
 }
+func (c *FormulaCol) Value(wb *WorkBook) CellValue {
+	return CellValue{}
+}
 
 var _ contentHandler = &RkCol{}
 
@@ -277,7 +283,7 @@ func (c *RkCol) String(wb *WorkBook) []string {
 	return []string{c.Xfrk.String(wb)}
 }
 func (c *RkCol) Value(wb *WorkBook) CellValue {
-	return c.Xfrk.Rk.Value(wb)
+	return c.Xfrk.Value(wb)
 }
 
 var _ contentHandler = &LabelsstCol{}
@@ -290,6 +296,11 @@ type LabelsstCol struct {
 
 func (c *LabelsstCol) String(wb *WorkBook) []string {
 	return []string{wb.sst[int(c.Sst)]}
+}
+func (c *LabelsstCol) Value(wb *WorkBook) CellValue {
+	return CellValue{
+		Text: wb.sst[int(c.Sst)],
+	}
 }
 
 var _ contentHandler = &labelCol{}
