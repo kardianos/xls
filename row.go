@@ -40,7 +40,13 @@ func (r *Row) ColExact(n int) string {
 	serial := uint16(n)
 	if ch, ok := r.cols[serial]; ok {
 		strs := ch.String(r.wb)
-		return strs[0]
+		for _, s := range strs {
+			if len(s) == 0 {
+				continue
+			}
+			return s
+		}
+		return ""
 	}
 	return ""
 }

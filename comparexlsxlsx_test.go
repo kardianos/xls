@@ -41,7 +41,7 @@ func compareXLX(xlsName string, csvName string) error {
 			csvText := strings.TrimSpace(cell)
 			xlsText := strings.TrimSpace(xlsRow.ColExact(coli))
 			v := xlsRow.Value(coli)
-			tm := xlsFile.ToDateTime(v.Float)
+			tm := xlsFile.ToDateTime(float64(v.Int))
 			if xlsText == csvText {
 				continue
 			}

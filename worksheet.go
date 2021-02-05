@@ -220,10 +220,28 @@ func (w *WorkSheet) addContent(rowNum uint16, ch contentHandler) {
 		row.info.Lcell = ch.LastCol()
 	}
 	coli := ch.FirstCol()
-	if _, found := row.cols[coli]; found {
-		panic("col already stored")
+	colLast := ch.LastCol()
+	if mc, ok := ch.(*MulrkCol); ok && coli != colLast {
+		for i := coli; i <= colLast; i++ {
+			x := mc.Xfrks[i-coli]
+			nc := &RkCol{
+				Xfrk: x,
+				Col: Col{
+					RowB:      mc.RowB,
+					FirstColB: i,
+				},
+			}
+			if _, found := row.cols[i]; found {
+				panic("col already stored")
+			}
+			row.cols[i] = nc
+		}
+	} else {
+		if _, found := row.cols[coli]; found {
+			panic("col already stored")
+		}
+		row.cols[coli] = ch
 	}
-	row.cols[coli] = ch
 }
 
 func (w *WorkSheet) addRow(info *rowInfo) (row *Row) {

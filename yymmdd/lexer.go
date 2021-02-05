@@ -109,27 +109,36 @@ func (l *lexer) emitRaw() {
 // is exit scanner.
 func initLexerState(l *lexer) lexerState {
 	for r := l.next(); r != EOF; r = l.next() {
-		if r == "y" {
+		switch r {
+		case "y":
 			l.emitRaw()
 			l.acceptRun("y")
 			l.emit(tYEAR)
-		} else if r == "M" {
+		case "Y":
+			l.emitRaw()
+			l.acceptRun("Y")
+			l.emit(tYEAR)
+		case "M":
 			l.emitRaw()
 			l.acceptRun("M")
 			l.emit(tMONTH)
-		} else if r == "d" {
+		case "d":
 			l.emitRaw()
 			l.acceptRun("d")
 			l.emit(tDAY)
-		} else if r == "h" {
+		case "D":
+			l.emitRaw()
+			l.acceptRun("D")
+			l.emit(tDAY)
+		case "h":
 			l.emitRaw()
 			l.acceptRun("h")
 			l.emit(tDAY)
-		} else if r == "m" {
+		case "m":
 			l.emitRaw()
 			l.acceptRun("m")
 			l.emit(tDAY)
-		} else if r == "s" {
+		case "s":
 			l.emitRaw()
 			l.acceptRun("s")
 			l.emit(tDAY)

@@ -17,7 +17,9 @@ type CellValue struct {
 	Format string
 }
 
-//content type
+var emptyCellValue = CellValue{}
+
+// content type
 type contentHandler interface {
 	String(*WorkBook) []string
 	Value(*WorkBook) CellValue
@@ -71,10 +73,7 @@ func (xf *XfRk) String(wb *WorkBook) string {
 			if formatterLower == "general" ||
 				strings.Contains(formatter.str, "#") ||
 				strings.Contains(formatter.str, ".00") ||
-				strings.Contains(formatterLower, "m/y") ||
-				strings.Contains(formatterLower, "d/y") ||
-				strings.Contains(formatterLower, "m.y") ||
-				strings.Contains(formatterLower, "d.y") ||
+				strings.Contains(formatter.str, "0") ||
 				strings.Contains(formatterLower, "h:") ||
 				strings.Contains(formatterLower, "д.г") {
 				//If format contains # or .00 then this is a number
@@ -100,8 +99,17 @@ func (xf *XfRk) String(wb *WorkBook) string {
 	return xf.Rk.String()
 }
 func (xf *XfRk) Value(wb *WorkBook) CellValue {
+	i, f, _ := xf.Rk.number()
+	idx := int(xf.Index)
+	format := ""
+	if len(wb.XF) > idx {
+		fNo := wb.XF[idx].formatNo()
+		format = wb.Formats[fNo].str
+	}
 	return CellValue{
-		Text: xf.String(wb),
+		Int:    i,
+		Float:  f,
+		Format: format,
 	}
 }
 
@@ -168,15 +176,19 @@ func (c *MulrkCol) String(wb *WorkBook) []string {
 	var res = make([]string, len(c.Xfrks))
 	for i := 0; i < len(c.Xfrks); i++ {
 		xfrk := c.Xfrks[i]
-		res[i] = xfrk.String(wb)
+		res[i] = xfrk.Rk.String()
 	}
 	return res
 }
 func (c *MulrkCol) Value(wb *WorkBook) CellValue {
-	if len(c.Xfrks) == 0 {
-		return CellValue{}
+	for _, x := range c.Xfrks {
+		v := x.Rk.Value(wb)
+		if v == emptyCellValue {
+			continue
+		}
+		return v
 	}
-	return c.Xfrks[0].Rk.Value(wb)
+	return CellValue{}
 }
 
 var _ contentHandler = &MulBlankCol{}
