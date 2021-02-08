@@ -7,11 +7,11 @@ import (
 )
 
 type Header struct {
-	Id        [2]uint32
+	ID        [2]uint32
 	Clid      [4]uint32
 	Verminor  uint16
 	Verdll    uint16
-	Byteorder uint16
+	ByteOrder uint16
 	Lsectorb  uint16
 	Lssectorb uint16
 	_         uint16
@@ -34,8 +34,8 @@ func parseHeader(bts []byte) (*Header, error) {
 	buf := bytes.NewBuffer(bts)
 	header := new(Header)
 	binary.Read(buf, binary.LittleEndian, header)
-	if header.Id[0] != 0xE011CFD0 || header.Id[1] != 0xE11AB1A1 || header.Byteorder != 0xFFFE {
-		return nil, fmt.Errorf("not an excel file")
+	if header.ID[0] != 0xE011CFD0 || header.ID[1] != 0xE11AB1A1 || header.ByteOrder != 0xFFFE {
+		return nil, fmt.Errorf("not an excel file: Header[0]=%X, Header[1]=%X, ByteOrder=%X", header.ID[0], header.ID[1], header.ByteOrder)
 	}
 
 	return header, nil
