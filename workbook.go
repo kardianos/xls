@@ -40,7 +40,7 @@ type sstInfo struct {
 	Count uint32
 }
 
-//read workbook from ole2 file
+// read workbook from ole2 file
 func newWorkBookFromOle2(rs io.ReadSeeker) (*WorkBook, error) {
 	wb := &WorkBook{
 		Formats: make(map[uint16]*Format),
@@ -324,39 +324,45 @@ func (w *WorkBook) NumSheets() int {
 // ReadAll is a helper function to read all cells from file
 // Notice: the max value is the limit of the max capacity of lines.
 // Warning: the helper function will need big memeory if file is large.
-func (w *WorkBook) ReadAll(max int) (res [][]string) {
-	res = make([][]string, 0)
-	for _, sheet := range w.sheets {
-		if len(res) < max {
-			max = max - len(res)
-			w.prepareSheet(sheet)
-			if sheet.MaxRow != 0 {
-				leng := int(sheet.MaxRow) + 1
-				if max < leng {
-					leng = max
-				}
-				temp := make([][]string, leng)
-				for k, row := range sheet.rows {
-					data := make([]string, 0)
-					if len(row.cols) > 0 {
-						for _, col := range row.cols {
-							if uint16(len(data)) <= col.LastCol() {
-								data = append(data, make([]string, col.LastCol()-uint16(len(data))+1)...)
-							}
-							str := col.String(w)
-
-							for i := uint16(0); i < col.LastCol()-col.FirstCol()+1; i++ {
-								data[col.FirstCol()+i] = str[i]
-							}
-						}
-						if leng > int(k) {
-							temp[k] = data
-						}
-					}
-				}
-				res = append(res, temp...)
-			}
+func (w *WorkBook) ReadAll(maxPerSheet int) (sheetData [][][]string, sheetName []string, err error) {
+	sheetName = make([]string, len(w.sheets))
+	for si, sheet := range w.sheets {
+		sheetName[si] = sheet.Name
+		// w.rows
+		err = w.prepareSheet(sheet)
+		if err != nil {
+			return sheetData, sheetName, err
 		}
+		if sheet.MaxRow == 0 {
+			sheetData = append(sheetData, [][]string{})
+			continue
+		}
+		leng := int(sheet.MaxRow) + 1
+		if maxPerSheet < leng {
+			leng = maxPerSheet
+		}
+		sd := make([][]string, leng)
+		for k, row := range sheet.rows {
+			if int(k) >= leng {
+				continue
+			}
+			if len(row.cols) == 0 {
+				continue
+			}
+			data := make([]string, 0)
+			for _, col := range row.cols {
+				if uint16(len(data)) <= col.LastCol() {
+					data = append(data, make([]string, col.LastCol()-uint16(len(data))+1)...)
+				}
+				str := col.String(w)
+
+				for i := uint16(0); i < col.LastCol()-col.FirstCol()+1; i++ {
+					data[col.FirstCol()+i] = str[i]
+				}
+			}
+			sd[k] = data
+		}
+		sheetData = append(sheetData, sd)
 	}
 	return
 }

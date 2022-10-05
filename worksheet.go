@@ -23,7 +23,7 @@ type boundsheet struct {
 	Name    byte
 }
 
-//WorkSheet in one WorkBook
+// WorkSheet in one WorkBook
 type WorkSheet struct {
 	bs         *boundsheet
 	wb         *WorkBook

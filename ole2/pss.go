@@ -1,7 +1,5 @@
 package ole2
 
-import ()
-
 type PSS struct {
 	name      [64]byte
 	bsize     uint16

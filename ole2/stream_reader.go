@@ -48,7 +48,7 @@ func (r *StreamReader) Read(p []byte) (n int, err error) {
 			r.reader.Seek(int64(pos), 0)
 		}
 	}
-	if n, err := r.reader.Read(p[readed:len(p)]); err == nil {
+	if n, err := r.reader.Read(p[readed:]); err == nil {
 		r.offset_in_sector += uint32(n)
 		if debug {
 			log.Printf("pos:%x,bit:% X", r.offset_of_sector, p)
