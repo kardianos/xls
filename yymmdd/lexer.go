@@ -133,15 +133,15 @@ func initLexerState(l *lexer) lexerState {
 		case "h":
 			l.emitRaw()
 			l.acceptRun("h")
-			l.emit(tDAY)
+			l.emit(tHOUR)
 		case "m":
 			l.emitRaw()
 			l.acceptRun("m")
-			l.emit(tDAY)
+			l.emit(tMINUTE)
 		case "s":
 			l.emitRaw()
 			l.acceptRun("s")
-			l.emit(tDAY)
+			l.emit(tSECOND)
 		}
 	}
 

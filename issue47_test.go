@@ -15,11 +15,15 @@ func TestIssue47(t *testing.T) {
 		t.Fatalf("Cant read testdata directory contents: %s", err)
 	}
 	for _, f := range files {
-		if filepath.Ext(f.Name()) != ".xls" {
+		fn := f.Name()
+		if filepath.Ext(fn) != ".xls" {
 			continue
 		}
-		t.Run(f.Name(), func(t *testing.T) {
-			xlsName := f.Name()
+		t.Run(fn, func(t *testing.T) {
+			if strings.HasPrefix(fn, "skip_") {
+				t.Skip("skipping compare")
+			}
+			xlsName := fn
 			csvName := strings.TrimSuffix(xlsName, filepath.Ext(xlsName)) + ".csv"
 			err := compareXLX(
 				path.Join(root, xlsName),
