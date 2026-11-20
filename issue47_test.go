@@ -1,16 +1,17 @@
 package xls
 
 import (
-	"io/ioutil"
-	"path"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func TestIssue47(t *testing.T) {
-	root := path.Join("testdata", "compare")
-	files, err := ioutil.ReadDir(root)
+// TestCompareCSV compares each testdata/compare/*.xls file with the CSV
+// export next to it. Files named skip_* are skipped.
+func TestCompareCSV(t *testing.T) {
+	root := filepath.Join("testdata", "compare")
+	files, err := os.ReadDir(root)
 	if err != nil {
 		t.Fatalf("Cant read testdata directory contents: %s", err)
 	}
@@ -23,16 +24,10 @@ func TestIssue47(t *testing.T) {
 			if strings.HasPrefix(fn, "skip_") {
 				t.Skip("skipping compare")
 			}
-			xlsName := fn
-			csvName := strings.TrimSuffix(xlsName, filepath.Ext(xlsName)) + ".csv"
-			err := compareXLX(
-				path.Join(root, xlsName),
-				path.Join(root, csvName),
-			)
-			if err != nil {
-				t.Fatalf("XLS file %s an CSV file are not equal: %v", xlsName, err)
+			csvName := strings.TrimSuffix(fn, filepath.Ext(fn)) + ".csv"
+			if err := compareXLX(filepath.Join(root, fn), filepath.Join(root, csvName)); err != nil {
+				t.Fatalf("XLS file %s and CSV file are not equal: %v", fn, err)
 			}
 		})
 	}
-
 }

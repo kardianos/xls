@@ -2,97 +2,33 @@ package xls
 
 import (
 	"math"
+	"strconv"
 	"time"
+
+	"github.com/kardianos/xls/yymmdd"
 )
 
-const mjd0 float64 = 2400000.5
-const mjdDJ2000 float64 = 51544.5
+// ToDateTime converts an Excel date serial number to a time in UTC, using
+// the workbook's date system (1900 or 1904). It returns the zero time if the
+// value is not a valid Excel date (negative, from 10000-01-01 on, or NaN).
+// See yymmdd.SerialTime for how Excel's 1900 leap-year error is handled.
+func (w *WorkBook) ToDateTime(f float64) time.Time {
+	t, _ := yymmdd.SerialTime(f, w.date1904)
+	return t
+}
 
-func shiftJulianToNoon(julianDays, julianFraction float64) (float64, float64) {
+// formatNumber renders a number in the shortest decimal form that reads
+// back as the same float64. Very large and very small magnitudes use an
+// exponent, so the text is never longer than about 25 bytes.
+func formatNumber(f float64) string {
 	switch {
-	case -0.5 < julianFraction && julianFraction < 0.5:
-		julianFraction += 0.5
-	case julianFraction >= 0.5:
-		julianDays += 1
-		julianFraction -= 0.5
-	case julianFraction <= -0.5:
-		julianDays -= 1
-		julianFraction += 1.5
+	case math.IsNaN(f) || math.IsInf(f, 0):
+		return "#NUM!" // Excel cannot hold these; it shows #NUM!
+	case f == 0:
+		return "0" // including -0
 	}
-	return julianDays, julianFraction
-}
-
-// Return the integer values for hour, minutes, seconds and
-// nanoseconds that comprised a given fraction of a day.
-func fractionOfADay(fraction float64) (hours, minutes, seconds, nanoseconds int) {
-	f := 5184000000000000 * fraction
-	nanoseconds = int(math.Mod(f, 1000000000))
-	f = f / 1000000000
-	seconds = int(math.Mod(f, 60))
-	f = f / 3600
-	minutes = int(math.Mod(f, 60))
-	f = f / 60
-	hours = int(f)
-	return hours, minutes, seconds, nanoseconds
-}
-
-func julianDateToGregorianTime(part1, part2 float64) time.Time {
-	part1I, part1F := math.Modf(part1)
-	part2I, part2F := math.Modf(part2)
-	julianDays := part1I + part2I
-	julianFraction := part1F + part2F
-	julianDays, julianFraction = shiftJulianToNoon(julianDays, julianFraction)
-	day, month, year := doTheFliegelAndVanFlandernAlgorithm(int(julianDays))
-	hours, minutes, seconds, nanoseconds := fractionOfADay(julianFraction)
-	return time.Date(year, time.Month(month), day, hours, minutes, seconds, nanoseconds, time.UTC)
-}
-
-// By this point generations of programmers have repeated the
-// algorithm sent to the editor of "Communications of the ACM" in 1968
-// (published in CACM, volume 11, number 10, October 1968, p.657).
-// None of those programmers seems to have found it necessary to
-// explain the constants or variable names set out by Henry F. Fliegel
-// and Thomas C. Van Flandern.  Maybe one day I'll buy that jounal and
-// expand an explanation here - that day is not today.
-func doTheFliegelAndVanFlandernAlgorithm(jd int) (day, month, year int) {
-	l := jd + 68569
-	n := (4 * l) / 146097
-	l = l - (146097*n+3)/4
-	i := (4000 * (l + 1)) / 1461001
-	l = l - (1461*i)/4 + 31
-	j := (80 * l) / 2447
-	d := l - (2447*j)/80
-	l = j / 11
-	m := j + 2 - (12 * l)
-	y := 100*(n-49) + i + l
-	return d, m, y
-}
-
-// Convert an excelTime representation (stored as a floating point number) to a time.Time.
-func timeFromExcelTime(excelTime float64, date1904 bool) time.Time {
-	var date time.Time
-	var intPart int64 = int64(excelTime)
-	// Excel uses Julian dates prior to March 1st 1900, and
-	// Gregorian thereafter.
-	if intPart <= 61 {
-		const OFFSET1900 = 15018.0
-		const OFFSET1904 = 16480.0
-		var date time.Time
-		if date1904 {
-			date = julianDateToGregorianTime(mjd0+OFFSET1904, excelTime)
-		} else {
-			date = julianDateToGregorianTime(mjd0+OFFSET1900, excelTime)
-		}
-		return date
+	if a := math.Abs(f); a >= 1e21 || a < 1e-6 {
+		return strconv.FormatFloat(f, 'g', -1, 64)
 	}
-	var floatPart float64 = excelTime - float64(intPart)
-	var dayNanoSeconds float64 = 24 * 60 * 60 * 1000 * 1000 * 1000
-	if date1904 {
-		date = time.Date(1904, 1, 1, 0, 0, 0, 0, time.UTC)
-	} else {
-		date = time.Date(1899, 12, 30, 0, 0, 0, 0, time.UTC)
-	}
-	durationDays := time.Duration(intPart) * time.Hour * 24
-	durationPart := time.Duration(dayNanoSeconds * floatPart)
-	return date.Add(durationDays).Add(durationPart)
+	return strconv.FormatFloat(f, 'f', -1, 64)
 }

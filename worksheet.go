@@ -1,259 +1,270 @@
 package xls
 
 import (
-	"bytes"
-	"encoding/binary"
-	"fmt"
-	"io"
-	"unicode/utf16"
+	"math"
+	"sort"
+	"sync"
+	"sync/atomic"
 )
 
+// TWorkSheetVisibility is the visibility of a sheet tab.
 type TWorkSheetVisibility byte
 
+// Sheet visibility values.
 const (
 	WorkSheetVisible    TWorkSheetVisibility = 0
 	WorkSheetHidden     TWorkSheetVisibility = 1
 	WorkSheetVeryHidden TWorkSheetVisibility = 2
 )
 
-type boundsheet struct {
-	Filepos uint32
-	Visible byte
-	Type    byte
-	Name    byte
+// CellRange is a rectangle of cells. All bounds are zero-based and
+// inclusive.
+type CellRange struct {
+	FirstRow, LastRow int
+	FirstCol, LastCol int
 }
 
-// WorkSheet in one WorkBook
+// WorkSheet is one sheet of a WorkBook. Get one with WorkBook.GetSheet.
+//
+// The exported fields are set when the sheet is read and must not be
+// changed; a WorkSheet is shared by every caller of GetSheet.
 type WorkSheet struct {
-	bs         *boundsheet
-	wb         *WorkBook
-	Name       string
-	Selected   bool
-	Visibility TWorkSheetVisibility
-	rows       map[uint16]*Row
-	//NOTICE: this is the max row number of the sheet, so it should be count -1
-	MaxRow      uint16
-	parsed      bool
-	rightToLeft bool
+	Name string
+	// Selected reports whether the sheet tab is selected.
+	Selected bool
+	// RightToLeft reports whether the sheet is shown right to left.
+	RightToLeft bool
+	Visibility  TWorkSheetVisibility
+	// Type is the kind of sheet: worksheet, chart, macro sheet or
+	// Visual Basic module.
+	Type SheetType
+	// MaxRow is the index of the last row that has a ROW record or a cell.
+	// A sheet with no rows also has MaxRow 0.
+	MaxRow uint16
+
+	wb      *WorkBook
+	offset  int   // stream offset of the sheet's BOF record
+	end     int   // stream offset after the sheet's EOF record
+	scanErr error // framing error found when the workbook was opened
+
+	once     sync.Once
+	err      error
+	rows     map[uint16]*Row
+	rowList  []*Row // rows sorted by index
+	merges   []ref
+	mergeIdx rangeIndex
+	// mergeText caches the text of each merged range's top-left cell, so
+	// a loop over the covered cells renders it once.
+	mergeText []atomic.Pointer[string]
+	links     []HyperLink
+	linkIdx   rangeIndex
+	badCol    bool // a cell record named a column past the last one
 }
 
+// SheetType is the kind of a sheet, from its BOF record.
+type SheetType uint16
+
+// Sheet types. Worksheets and macro sheets have cells; the others are
+// returned with no rows.
+const (
+	SheetWorksheet SheetType = 0x0010
+	SheetChart     SheetType = 0x0020
+	SheetMacro     SheetType = 0x0040 // Excel 4.0 macro sheet
+	SheetVBModule  SheetType = 0x0006
+)
+
+// Row returns row i (zero-based), or nil if the row has no ROW record and
+// no cells.
 func (w *WorkSheet) Row(i int) *Row {
-	row := w.rows[uint16(i)]
-	if row != nil {
-		row.wb = w.wb
+	if i < 0 || i > math.MaxUint16 {
+		return nil
 	}
-	return row
+	return w.rows[uint16(i)]
 }
 
-func (w *WorkSheet) parse(buf io.ReadSeeker) error {
-	w.rows = make(map[uint16]*Row)
-	b := new(bof)
-	var colPre interface{}
-	var err error
-	for {
-		err = binary.Read(buf, binary.LittleEndian, b)
-		if err != nil {
-			return err
-		}
-		colPre, err = w.parseBof(buf, b, colPre)
-		if err != nil {
-			return err
-		}
-		if b.ID == 0xa {
-			break
-		}
+// Rows returns the rows that have a ROW record or a cell, in order. Unlike
+// a loop from 0 to MaxRow, its length is bounded by the size of the file.
+func (w *WorkSheet) Rows() []*Row {
+	return append([]*Row(nil), w.rowList...)
+}
+
+// MergedCells returns the merged cell ranges of the sheet.
+func (w *WorkSheet) MergedCells() []CellRange {
+	out := make([]CellRange, len(w.merges))
+	for i, m := range w.merges {
+		out[i] = m.cellRange()
 	}
-	w.parsed = true
+	return out
+}
+
+// Hyperlinks returns the hyperlinks of the sheet.
+func (w *WorkSheet) Hyperlinks() []HyperLink {
+	return append([]HyperLink(nil), w.links...)
+}
+
+// mergedAt returns the merged range that contains a cell, and its index.
+func (w *WorkSheet) mergedAt(row, col int) (CellRange, int, bool) {
+	if i := w.mergeIdx.find(row, col); i >= 0 {
+		return w.merges[i].cellRange(), i, true
+	}
+	return CellRange{}, -1, false
+}
+
+// Row is one row of a sheet. A nil *Row, as WorkSheet.Row returns for a
+// missing row, behaves as an empty row.
+type Row struct {
+	sheet *WorkSheet
+	index int
+
+	hasInfo        bool   // a ROW record was seen
+	colMic, colMac uint16 // from the ROW record; colMac is exclusive
+
+	minCol int // first column with a cell or blank, or -1
+	width  int // one past the last column with a cell or blank
+	cells  []cell
+}
+
+// find returns the cell in column col, or nil.
+func (r *Row) find(col int) *cell {
+	if r == nil || col < 0 || col > math.MaxUint16 {
+		return nil
+	}
+	i := sort.Search(len(r.cells), func(i int) bool { return int(r.cells[i].col) >= col })
+	if i < len(r.cells) && int(r.cells[i].col) == col {
+		return &r.cells[i]
+	}
 	return nil
 }
 
-func (w *WorkSheet) parseBof(buf io.ReadSeeker, b *bof, colPre interface{}) (interface{}, error) {
-	var col interface{}
-	var bts = make([]byte, b.Size)
-	binary.Read(buf, binary.LittleEndian, bts)
-	buf = bytes.NewReader(bts)
-	switch b.ID {
-	// case 0x0E5: //MERGEDCELLS
-	// ws.mergedCells(buf)
-	case 0x23E: // WINDOW2
-		var sheetOptions, firstVisibleRow, firstVisibleColumn uint16
-		binary.Read(buf, binary.LittleEndian, &sheetOptions)
-		binary.Read(buf, binary.LittleEndian, &firstVisibleRow)    // not valuable
-		binary.Read(buf, binary.LittleEndian, &firstVisibleColumn) // not valuable
-		//buf.Seek(int64(b.Size)-2*3, 1)
-		w.rightToLeft = (sheetOptions & 0x40) != 0
-		w.Selected = (sheetOptions & 0x400) != 0
-	case 0x208: //ROW
-		r := new(rowInfo)
-		binary.Read(buf, binary.LittleEndian, r)
-		w.addRow(r)
-	case 0x0BD: //MULRK
-		mc := new(MulrkCol)
-		size := (b.Size - 6) / 6
-		binary.Read(buf, binary.LittleEndian, &mc.Col)
-		mc.Xfrks = make([]XfRk, size)
-		for i := uint16(0); i < size; i++ {
-			binary.Read(buf, binary.LittleEndian, &mc.Xfrks[i])
-		}
-		binary.Read(buf, binary.LittleEndian, &mc.LastColB)
-		col = mc
-	case 0x0BE: //MULBLANK
-		mc := new(MulBlankCol)
-		size := (b.Size - 6) / 2
-		binary.Read(buf, binary.LittleEndian, &mc.Col)
-		mc.Xfs = make([]uint16, size)
-		for i := uint16(0); i < size; i++ {
-			binary.Read(buf, binary.LittleEndian, &mc.Xfs[i])
-		}
-		binary.Read(buf, binary.LittleEndian, &mc.LastColB)
-		col = mc
-	case 0x203: //NUMBER
-		col = new(NumberCol)
-		binary.Read(buf, binary.LittleEndian, col)
-	case 0x06: //FORMULA
-		c := new(FormulaCol)
-		binary.Read(buf, binary.LittleEndian, &c.Header)
-		c.Bts = make([]byte, b.Size-20)
-		binary.Read(buf, binary.LittleEndian, &c.Bts)
-		col = c
-	case 0x207: //STRING = FORMULA-VALUE is expected right after FORMULA
-		ch, ok := colPre.(*FormulaCol)
-		if !ok {
-			return nil, fmt.Errorf("Expected formula token, got %T", colPre)
-		}
-		c := new(FormulaStringCol)
-		c.Col = ch.Header.Col
-		var cStringLen uint16
-		binary.Read(buf, binary.LittleEndian, &cStringLen)
-		str, err := w.wb.getString(buf, cStringLen)
-		if nil == err {
-			c.RenderedValue = str
-		}
-		col = c
-	case 0x27e: //RK
-		col = new(RkCol)
-		binary.Read(buf, binary.LittleEndian, col)
-	case 0xFD: //LABELSST
-		col = new(LabelsstCol)
-		binary.Read(buf, binary.LittleEndian, col)
-	case 0x204:
-		c := new(labelCol)
-		binary.Read(buf, binary.LittleEndian, &c.BlankCol)
-		var count uint16
-		binary.Read(buf, binary.LittleEndian, &count)
-		c.Str, _ = w.wb.getString(buf, count)
-		col = c
-	case 0x201: //BLANK
-		col = new(BlankCol)
-		binary.Read(buf, binary.LittleEndian, col)
-	case 0x1b8: //HYPERLINK
-		var hy HyperLink
-		binary.Read(buf, binary.LittleEndian, &hy.CellRange)
-		buf.Seek(20, 1)
-		var flag uint32
-		binary.Read(buf, binary.LittleEndian, &flag)
-		var count uint32
-
-		if flag&0x14 != 0 {
-			binary.Read(buf, binary.LittleEndian, &count)
-			hy.Description = b.utf16String(buf, count)
-		}
-		if flag&0x80 != 0 {
-			binary.Read(buf, binary.LittleEndian, &count)
-			hy.TargetFrame = b.utf16String(buf, count)
-		}
-		if flag&0x1 != 0 {
-			var guid [2]uint64
-			binary.Read(buf, binary.BigEndian, &guid)
-			if guid[0] == 0xE0C9EA79F9BACE11 && guid[1] == 0x8C8200AA004BA90B { //URL
-				hy.IsURL = true
-				binary.Read(buf, binary.LittleEndian, &count)
-				hy.URL = b.utf16String(buf, count/2)
-			} else if guid[0] == 0x303000000000000 && guid[1] == 0xC000000000000046 { //URL{
-				var upCount uint16
-				binary.Read(buf, binary.LittleEndian, &upCount)
-				binary.Read(buf, binary.LittleEndian, &count)
-				bts := make([]byte, count)
-				binary.Read(buf, binary.LittleEndian, &bts)
-				hy.ShortedFilePath = string(bts)
-				buf.Seek(24, 1)
-				binary.Read(buf, binary.LittleEndian, &count)
-				if count > 0 {
-					binary.Read(buf, binary.LittleEndian, &count)
-					buf.Seek(2, 1)
-					hy.ExtendedFilePath = b.utf16String(buf, count/2+1)
-				}
-			}
-		}
-		if flag&0x8 != 0 {
-			binary.Read(buf, binary.LittleEndian, &count)
-			var bts = make([]uint16, count)
-			binary.Read(buf, binary.LittleEndian, &bts)
-			runes := utf16.Decode(bts[:len(bts)-1])
-			hy.TextMark = string(runes)
-		}
-
-		for i := hy.CellRange.FirstRow(); i <= hy.CellRange.LastRow(); i++ {
-			w.addContent(i, &hy)
-		}
-	case 0x809:
-		buf.Seek(int64(b.Size), 1)
-	case 0xa:
-	default:
-		buf.Seek(int64(b.Size), 1)
+// Col returns the text of column n (zero-based), or "" if there is no
+// value. As in Excel, every cell of a merged range shows the range's
+// top-left value, even a covered cell that holds a value of its own (use
+// ColExact for that). Row returns nil for a row with no records even if a
+// merged range covers it; Excel writes blank cells for the covered area,
+// so in its files those rows exist.
+func (r *Row) Col(n int) string {
+	if r == nil {
+		return ""
 	}
-	if x, ok := col.(contentColumner); ok {
-		w.addContent(x.Row(), x)
+	if i, top := r.mergedTop(n); i >= 0 {
+		if top == nil {
+			return ""
+		}
+		if p := r.sheet.mergeText[i].Load(); p != nil {
+			return *p
+		}
+		s := r.sheet.text(top)
+		r.sheet.mergeText[i].Store(&s)
+		return s
 	}
-	return col, nil
+	if c := r.find(n); c != nil {
+		return r.sheet.text(c)
+	}
+	return ""
 }
 
-func (w *WorkSheet) addContent(rowNum uint16, ch contentHandler) {
-	var row *Row
-	var ok bool
-	if row, ok = w.rows[rowNum]; !ok {
-		row = w.addRow(&rowInfo{
-			Index: rowNum,
-		})
+// ColExact returns the text of column n (zero-based), or "" if there is no
+// value. Merged ranges have their value only in the top-left cell.
+func (r *Row) ColExact(n int) string {
+	if r == nil {
+		return ""
 	}
-	if row.info.Lcell < ch.LastCol() {
-		row.info.Lcell = ch.LastCol()
+	if c := r.find(n); c != nil {
+		return r.sheet.text(c)
 	}
-	coli := ch.FirstCol()
-	colLast := ch.LastCol()
-	if mc, ok := ch.(*MulrkCol); ok && coli != colLast {
-		for i := coli; i <= colLast; i++ {
-			x := mc.Xfrks[i-coli]
-			nc := &RkCol{
-				Xfrk: x,
-				Col: Col{
-					RowB:      mc.RowB,
-					FirstColB: i,
-				},
-			}
-			if _, found := row.cols[i]; found {
-				panic("col already stored")
-			}
-			row.cols[i] = nc
-		}
-	} else {
-		if _, found := row.cols[coli]; found {
-			panic("col already stored")
-		}
-		row.cols[coli] = ch
-	}
+	return ""
 }
 
-func (w *WorkSheet) addRow(info *rowInfo) (row *Row) {
-	if info.Index > w.MaxRow {
-		w.MaxRow = info.Index
+// Value returns the typed value of column n (zero-based). Like Col, every
+// cell of a merged range returns the range's top-left value. Empty cells
+// return a CellValue of kind KindEmpty.
+func (r *Row) Value(n int) CellValue {
+	if r == nil {
+		return CellValue{}
 	}
-	var ok bool
-	if row, ok = w.rows[info.Index]; ok {
-		row.info = info
-	} else {
-		row = &Row{info: info, cols: make(map[uint16]contentHandler)}
-		w.rows[info.Index] = row
+	if i, top := r.mergedTop(n); i >= 0 {
+		if top == nil {
+			return CellValue{}
+		}
+		return r.sheet.value(top)
 	}
-	return
+	if c := r.find(n); c != nil {
+		return r.sheet.value(c)
+	}
+	return CellValue{}
+}
+
+// mergedTop reports whether column n of this row is covered by a merged
+// range, other than as its top-left cell. If so, it returns the range's
+// index and its top-left cell, which is nil if that cell is empty.
+func (r *Row) mergedTop(n int) (int, *cell) {
+	m, i, ok := r.sheet.mergedAt(r.index, n)
+	if !ok || (m.FirstRow == r.index && m.FirstCol == n) {
+		return -1, nil
+	}
+	return i, r.sheet.Row(m.FirstRow).find(m.FirstCol)
+}
+
+// Cols returns the columns of the row that hold a value (not blank
+// cells), in order. A loop over Cols visits only stored cells, which is
+// cheaper than a loop from FirstCol to LastCol on sparse rows. Covered
+// cells of a merged range that hold no value of their own are not
+// included.
+func (r *Row) Cols() []int {
+	if r == nil {
+		return nil
+	}
+	out := make([]int, len(r.cells))
+	for i := range r.cells {
+		out[i] = int(r.cells[i].col)
+	}
+	return out
+}
+
+// Index returns the row's index (zero-based), or -1 for a nil Row.
+func (r *Row) Index() int {
+	if r == nil {
+		return -1
+	}
+	return r.index
+}
+
+// Hyperlink returns the hyperlink that covers column n of this row, if any.
+func (r *Row) Hyperlink(n int) (HyperLink, bool) {
+	if r == nil {
+		return HyperLink{}, false
+	}
+	if i := r.sheet.linkIdx.find(r.index, n); i >= 0 {
+		return r.sheet.links[i], true
+	}
+	return HyperLink{}, false
+}
+
+// FirstCol returns the index of the first column of the row.
+func (r *Row) FirstCol() int {
+	if r == nil {
+		return 0
+	}
+	first := r.minCol
+	if r.hasInfo && (first < 0 || int(r.colMic) < first) {
+		first = int(r.colMic)
+	}
+	if first < 0 {
+		return 0
+	}
+	return first
+}
+
+// LastCol returns one past the index of the last column of the row, so
+// columns FirstCol() <= c < LastCol() hold the row's cells. It is at most
+// 256, the number of columns in a sheet.
+func (r *Row) LastCol() int {
+	if r == nil {
+		return 0
+	}
+	last := r.width
+	if r.hasInfo && int(r.colMac) > last {
+		last = int(r.colMac)
+	}
+	return last
 }

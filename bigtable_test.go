@@ -29,7 +29,7 @@ func TestBigTable(t *testing.T) {
 	for i := 1; i <= 4999; i++ {
 		row := sheet.Row(i)
 		if row == nil {
-			continue
+			t.Fatalf("row %d missing", i)
 		}
 
 		col2sample := fmt.Sprintf("%d от %s", cnt1, date1.Format("02.01.2006"))

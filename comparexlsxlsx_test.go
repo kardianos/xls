@@ -35,6 +35,9 @@ func compareXLX(xlsName string, csvName string) error {
 	for rowi, row := range all {
 		xlsRow := xlsSheet.Row(rowi)
 		if xlsRow == nil {
+			if strings.TrimSpace(strings.Join(row, "")) != "" {
+				return fmt.Errorf("row %d: missing, but the CSV has %q", rowi, row)
+			}
 			continue
 		}
 		for coli, cell := range row {
@@ -49,8 +52,9 @@ func compareXLX(xlsName string, csvName string) error {
 			csvFloat, csvErr := strconv.ParseFloat(csvText, 64)
 
 			if xlsErr == nil && csvErr == nil {
+				// CSV exports keep 15 significant digits.
 				diff := math.Abs(xlsFloat - csvFloat)
-				if diff <= 0.0000001 {
+				if diff <= 1e-14*math.Max(1, math.Max(math.Abs(xlsFloat), math.Abs(csvFloat))) {
 					continue
 				}
 				return fmt.Errorf("sheet:%d, row/col: %d/%d, csv: (%s)[%d], xls: (%s)[%d], numbers difference: %f, v=%v, t=%s",
